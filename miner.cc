@@ -21,7 +21,7 @@
 
 using json = nlohmann::json;
 
-const std::string ADDRESS = "1GvSP13YjQAu9VAa8J1Hvbc4n3N8kUE3Ch";
+std::string ADDRESS = "";  // wallet__address
 const std::string PASSWORD= "password";
 const std::string HOST = "solo.ckpool.org";
 
@@ -44,7 +44,7 @@ bool read_file_to_string(const std::string& filename, std::string& content) {
 
     std::string line;
     while (std::getline(file, line)) {
-        content += line + "\n";  
+        content += line;  
     }
 
     file.close();
@@ -273,9 +273,10 @@ int main() {
   std::string lowest_hash="";
   std::string t_hash="";
 
+  read_file_to_string("address.txt", ADDRESS); 
   read_file_to_string("lowest_hash.txt", lowest_hash);
 
-  
+  std::cout<<"Wallet Address: "<<ADDRESS<<std::endl;   
   while(unfound){
 
   rng.seed(static_cast<uint32_t>(std::time(nullptr)));
