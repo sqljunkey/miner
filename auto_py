@@ -1,0 +1,6 @@
+@echo off
+:loop
+python miner.py
+echo Restarting miner...
+timeout /t 5
+goto loop

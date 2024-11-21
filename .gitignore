@@ -1,0 +1,8 @@
+# ignore ALL .log files
+*.log
+*.txt
+*~
+*.py
+*.bat
+*#
+
