@@ -9,14 +9,17 @@
 #include <random>
 #include <ctime>
 #include <iomanip>
-#include <omp.h>
 #include <fstream>
 #include <algorithm>
 #include <cstring>         
 #include <sys/socket.h>     
 #include <arpa/inet.h>    
 #include <netdb.h>          
-#include <unistd.h>       
+#include <unistd.h>
+#include <OpenCL/cl.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 
 using json = nlohmann::json;
 
@@ -32,6 +35,115 @@ const int PORT = 3333;
 
 std::mt19937 rng(static_cast<uint32_t>(std::time(nullptr)));
 std::uniform_int_distribution<uint32_t> dist(0, UINT32_MAX);
+
+char* read_kernel_source(const char* filename) {
+    FILE* file = fopen(filename, "r");
+    if (!file) {
+        perror("Failed to open kernel file");
+        exit(1);
+    }
+ 
+    fseek(file, 0, SEEK_END);
+    size_t size = ftell(file);
+    rewind(file);
+ 
+    char* source = (char*)malloc(size + 1);
+    fread(source, 1, size, file);
+    source[size] = '\0';
+    fclose(file);
+ 
+    return source;
+}
+
+uint32_t  mine_gpu( const char * input_hex,  size_t global_size ,  size_t offset ){
+
+
+    size_t input_len = strlen(input_hex);
+    size_t output_nonce=0; 
+    char* source = read_kernel_source("sha256.cl");
+
+ 
+    
+    cl_platform_id platform;
+    cl_device_id device;
+    cl_context context;
+    cl_command_queue queue;
+    cl_program program;
+    cl_kernel kernel;
+    cl_int err;
+ 
+   
+    err = clGetPlatformIDs(1, &platform, NULL);
+    err |= clGetDeviceIDs(platform, CL_DEVICE_TYPE_GPU, 1, &device, NULL);
+ 
+   
+    context = clCreateContext(NULL, 1, &device, NULL, NULL, &err);
+    queue = clCreateCommandQueue(context, device, 0, &err);
+ 
+  
+    
+    program = clCreateProgramWithSource(context, 1, (const char**)&source, NULL, &err);
+    err = clBuildProgram(program, 1, &device, NULL, NULL, NULL);
+    
+    if (err != CL_SUCCESS) {
+        size_t log_size;
+        clGetProgramBuildInfo(program, device, CL_PROGRAM_BUILD_LOG, 0, NULL, &log_size);
+        char* log = (char*)malloc(log_size);
+        clGetProgramBuildInfo(program, device, CL_PROGRAM_BUILD_LOG, log_size, log, NULL);
+        printf("Build log:\n%s\n", log);
+        free(log);
+        exit(1);
+    }
+ 
+    kernel = clCreateKernel(program, "sha256_kernel", &err);
+ 
+   
+    cl_mem input_buffer = clCreateBuffer(context, CL_MEM_READ_ONLY ,input_len +1,NULL, &err);
+    cl_mem output_buffer = clCreateBuffer(context, CL_MEM_READ_WRITE, 65 , NULL, &err);
+    cl_mem nonce_buffer = clCreateBuffer(context, CL_MEM_WRITE_ONLY, sizeof(unsigned long) , NULL, &err);
+ 
+    err = clEnqueueWriteBuffer(queue, input_buffer, CL_TRUE, 0, input_len * sizeof(const char)+1, input_hex, 0, NULL, NULL);
+ 
+    clFinish(queue);
+    
+    
+    err = clSetKernelArg(kernel, 0, sizeof(cl_mem), &input_buffer);
+    err |= clSetKernelArg(kernel, 1, sizeof(unsigned long), &input_len);
+    err |= clSetKernelArg(kernel, 2, sizeof(cl_mem), &output_buffer);
+    err |= clSetKernelArg(kernel, 3, sizeof(cl_mem), &nonce_buffer);
+ 
+    if(err !=CL_SUCCESS){printf("Problem\n");}
+ 
+
+  
+    err = clEnqueueNDRangeKernel(queue, kernel, 1, &offset, &global_size, NULL, 0, NULL, NULL);
+    clFinish(queue);
+ 
+ 
+   
+    char hash_output[65]={0};
+    err = clEnqueueReadBuffer(queue, output_buffer, CL_TRUE, 0, 65, hash_output, 0, NULL, NULL);
+    err = clEnqueueReadBuffer(queue, nonce_buffer, CL_TRUE, 0, sizeof(unsigned long), &output_nonce, 0, NULL, NULL);
+   
+    clFinish(queue);
+    printf("SHA-256 hash: %s\n", hash_output);
+ 
+    
+    clReleaseMemObject(input_buffer);
+    clReleaseMemObject(output_buffer);
+    clReleaseKernel(kernel);
+    clReleaseProgram(program);
+    clReleaseCommandQueue(queue);
+    clReleaseContext(context);
+    free(source);
+ 
+ 
+    return output_nonce;
+
+
+
+
+}
 
 
 bool read_file_to_string(const std::string& filename, std::string& content) {
@@ -225,38 +337,17 @@ bool is_hash_valid(const std::string& hash, const std::string& target) {
 }
 
 
-std::string receive_data(SOCKET sockfd) {
-    char buffer[4096];
-    std::string result;
-    int n;
-
-    while ((n = recv(sockfd, buffer, sizeof(buffer) - 1, 0)) > 0) {
-      std::cout<<result<<std::endl;
-        buffer[n] = '\0';  
-        result += buffer; 
-        if (n < sizeof(buffer) - 1) break; 
-    }
-
-    if (n == SOCKET_ERROR) {
-        std::cerr << "Receive failed with error: " << WSAGetLastError() << std::endl;
-    } else if (n == 0) {
-        std::cout << "Connection closed by server." << std::endl;
-    } else {
-      //std::cout << "Received " << result.size() << " bytes: " << result << std::endl;
-    }
-
-    return result;
-}
 
 
-std::string generate_nonce() {
+
+std::string generate_nonce(uint32_t i) {
 
 
-    uint32_t random_number = dist(rng);
+  //uint32_t random_number = dist(rng);
 
   
     std::stringstream ss;
-    ss << std::hex << std::setw(8) << std::setfill('0') << random_number;
+    ss << std::hex << std::setw(8) << std::setfill('0') << i;
 
     return ss.str();
 }
@@ -365,16 +456,18 @@ int main() {
     merkle_root = to_little_endian(merkle_root);
 
 
-    #pragma omp parallel for schedule(dynamic) 
-    for(int i =0; i < 100000000; i++){
+      std::string partial_block_header = version + prevhash + merkle_root + nbits + ntime;
 
-      std::string nonce = generate_nonce();
+      uint32_t n = gpu_mine(partial_block_header.c_str(), 1000, dist(rng) ); 
 
-      std::string blockheader = version + prevhash + merkle_root + nbits + ntime + nonce + 
+      std::string nonce = generate_nonce(n);
+
+      std::string blockheader = partial_block_header + nonce + 
                               "000000800000000000000000000000000000000000000000000000000000000000000000000000000000000080020000";
 
      
     std::string hash = sha256(sha256(blockheader));
+    std::cout<<"GPU hash: "<<hash<<std::endl;
 
     std::transform(hash.begin(), hash.end(), hash.begin(), ::toupper);
     std::transform(target.begin(), target.end(), target.begin(), ::toupper);
@@ -414,7 +507,7 @@ int main() {
       write_string_to_file("lowest_hash.txt", lowest_hash);
       
     }
-  }
+  
      close(sockfd);
   }
 

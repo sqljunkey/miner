@@ -329,7 +329,7 @@ int hex_string_compare(const char *str1, const char *str2) {
 }
  
  
-__kernel void sha256_kernel(__global const char *input, unsigned long input_len, __global unsigned char *output){
+__kernel void sha256_kernel(__global const char *input, unsigned long input_len, __global unsigned char *output, __global unsigned long *output_nonce ){
  
  
 unsigned char temp_input[1024];
@@ -372,7 +372,8 @@ unsigned char temp_temp[65];
  
 
  if(hex_string_compare(temp_output_final, temp_temp) < 0  || output[0]=='\0'  ){
- 
+
+  *output_nonce = get_global_id(0);
 
   for(int i=0; i < 65; i++ ){
  
