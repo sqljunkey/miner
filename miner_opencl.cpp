@@ -113,66 +113,66 @@ std::string to_little_endian(const std::string& input) {
     return output;
 }
 
-bool init_winsock() {
-    WSADATA wsaData;
-    int result = WSAStartup(MAKEWORD(2, 2), &wsaData);
-    if (result != 0) {
-        std::cerr << "WSAStartup failed: " << result << std::endl;
-        return false;
-    }
-    return true;
-}
 
+int connect_to_server(const std::string &host, int port) {
+    int sockfd;
+    struct addrinfo hints{}, *res;
 
-void cleanup_winsock() {
-    WSACleanup();
-}
-
-
-SOCKET connect_to_server(const std::string& host, int port) {
-    SOCKET sockfd = INVALID_SOCKET;
-
-    struct addrinfo* result = NULL, hints;
-    ZeroMemory(&hints, sizeof(hints));
+    memset(&hints, 0, sizeof(hints));
     hints.ai_family = AF_INET;
     hints.ai_socktype = SOCK_STREAM;
-    hints.ai_protocol = IPPROTO_TCP;
 
-    int res = getaddrinfo(host.c_str(), std::to_string(port).c_str(), &hints, &result);
-    if (res != 0) {
-        std::cerr << "getaddrinfo failed: " << res << std::endl;
-        cleanup_winsock();
-        return INVALID_SOCKET;
+    if (getaddrinfo(host.c_str(), std::to_string(port).c_str(), &hints, &res) != 0) {
+        std::cerr << "getaddrinfo failed\n";
+        return -1;
     }
 
-    sockfd = socket(result->ai_family, result->ai_socktype, result->ai_protocol);
-    if (sockfd == INVALID_SOCKET) {
-        std::cerr << "Error creating socket." << std::endl;
-        freeaddrinfo(result);
-        cleanup_winsock();
-        return INVALID_SOCKET;
+    sockfd = socket(res->ai_family, res->ai_socktype, res->ai_protocol);
+    if (sockfd == -1) {
+        std::cerr << "Socket creation failed\n";
+        freeaddrinfo(res);
+        return -1;
     }
 
-    res = connect(sockfd, result->ai_addr, (int)result->ai_addrlen);
-    if (res == SOCKET_ERROR) {
-        std::cerr << "Error connecting to server." << std::endl;
-        closesocket(sockfd);
-        freeaddrinfo(result);
-        cleanup_winsock();
-        return INVALID_SOCKET;
+    if (connect(sockfd, res->ai_addr, res->ai_addrlen) == -1) {
+        std::cerr << "Connection failed\n";
+        close(sockfd);
+        freeaddrinfo(res);
+        return -1;
     }
 
-    freeaddrinfo(result);
+    freeaddrinfo(res);
     return sockfd;
 }
 
-void send_data(SOCKET sockfd, const std::vector<unsigned char>& data) {
-    int bytes_sent = send(sockfd, reinterpret_cast<const char*>(data.data()), data.size(), 0);
-    if (bytes_sent == SOCKET_ERROR) {
-        std::cerr << "Send failed with error: " << WSAGetLastError() << std::endl;
+void send_data(int sockfd, const std::vector<unsigned char> &data) {
+    ssize_t bytes_sent = send(sockfd, reinterpret_cast<const char *>(data.data()), data.size(), 0);
+    if (bytes_sent == -1) {
+        std::cerr << "Send failed\n";
     } else {
-        std::cout << "Sent " << bytes_sent << " bytes." << std::endl;
+        std::cout << "Sent " << bytes_sent << " bytes.\n";
     }
+}
+
+std::string receive_data(int sockfd) {
+    char buffer[4096];
+    std::string result;
+    ssize_t n;
+
+    while ((n = recv(sockfd, buffer, sizeof(buffer) - 1, 0)) > 0) {
+        buffer[n] = '\0';
+        result += buffer;
+        if (n < sizeof(buffer) - 1)
+            break;
+    }
+
+    if (n == -1) {
+        std::cerr << "Receive failed\n";
+    } else if (n == 0) {
+        std::cout << "Connection closed by server.\n";
+    }
+
+    return result;
 }
 
 std::vector<unsigned char> string_to_byte_vector(const std::string& str) {
@@ -285,17 +285,10 @@ int main() {
  
 
     
-    if (!init_winsock()) {
+    int sockfd = connect_to_server(HOST, PORT);
+    if (sockfd == -1) {
         return 1;
     }
-
-  
-
-    SOCKET sockfd = connect_to_server(HOST, PORT);
-    if (sockfd == INVALID_SOCKET) {
-        return 1;
-    }
-
 
 
 
@@ -422,9 +415,7 @@ int main() {
       
     }
   }
-
-    closesocket(sockfd);
-    cleanup_winsock();
+     close(sockfd);
   }
 
     return 0;
