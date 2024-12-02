@@ -3,8 +3,6 @@
 #include <iomanip>
 #include <sstream>
 #include <vector>
-#include <openssl/evp.h>
-#include <openssl/crypto.h>
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <nlohmann/json.hpp>
@@ -66,44 +64,129 @@ bool write_string_to_file(const std::string& filename, const std::string& conten
 
 
 
-std::string sha256(const std::string& input) {
+__device__ unsigned int rotate_right(unsigned int value, unsigned int shift) {
+    return (value >> shift) | (value << (32 - shift));
+}
+
+__device__ void sha256_transform(const unsigned char *data, unsigned char *hash) {
+    unsigned int K[64] = { /* SHA256 constants */ };
+    unsigned int W[64], a, b, c, d, e, f, g, h;
     
-    EVP_MD_CTX* context = EVP_MD_CTX_new();
-    if (context == nullptr) {
-        throw std::runtime_error("Failed to create EVP_MD_CTX");
+    // Initial hash values (SHA-256 standard values)
+    a = 0x6a09e667;
+    b = 0xbb67ae85;
+    c = 0x3c6ef372;
+    d = 0xa54ff53a;
+    e = 0x510e527f;
+    f = 0x9b05688c;
+    g = 0x1f83d9ab;
+    h = 0x5be0cd19;
+
+    // Message preparation (copy into W[0..15])
+    for (int i = 0; i < 16; ++i) {
+        W[i] = (data[i * 4] << 24) | (data[i * 4 + 1] << 16) | (data[i * 4 + 2] << 8) | data[i * 4 + 3];
     }
 
-    
-    if (EVP_DigestInit_ex(context, EVP_sha256(), nullptr) != 1) {
-        EVP_MD_CTX_free(context);
-        throw std::runtime_error("EVP_DigestInit_ex failed");
+    // SHA-256 main loop
+    for (int i = 16; i < 64; ++i) {
+        unsigned int s0 = rotate_right(W[i - 15], 7) ^ rotate_right(W[i - 15], 18) ^ (W[i - 15] >> 3);
+        unsigned int s1 = rotate_right(W[i - 2], 17) ^ rotate_right(W[i - 2], 19) ^ (W[i - 2] >> 10);
+        W[i] = W[i - 16] + s0 + W[i - 7] + s1;
     }
 
-   
-    if (EVP_DigestUpdate(context, input.c_str(), input.size()) != 1) {
-        EVP_MD_CTX_free(context);
-        throw std::runtime_error("EVP_DigestUpdate failed");
+    // Main SHA-256 loop
+    for (int i = 0; i < 64; ++i) {
+        unsigned int temp1 = h + (rotate_right(e, 6) ^ rotate_right(e, 11) ^ rotate_right(e, 25)) + ((e & f) ^ (~e & g)) + K[i] + W[i];
+        unsigned int temp2 = (rotate_right(a, 2) ^ rotate_right(a, 13) ^ rotate_right(a, 22)) + ((a & b) ^ (a & c) ^ (b & c));
+        h = g;
+        g = f;
+        f = e;
+        e = d + temp1;
+        d = c;
+        c = b;
+        b = a;
+        a = temp1 + temp2;
     }
 
-   
-    unsigned char hash[EVP_MAX_MD_SIZE];
-    unsigned int lengthOfHash = 0;
-    if (EVP_DigestFinal_ex(context, hash, &lengthOfHash) != 1) {
-        EVP_MD_CTX_free(context);
-        throw std::runtime_error("EVP_DigestFinal_ex failed");
+    // Add the hash values to the current hash
+    hash[0] = (a >> 24) & 0xff;
+    hash[1] = (a >> 16) & 0xff;
+    hash[2] = (a >> 8) & 0xff;
+    hash[3] = a & 0xff;
+
+    // Repeat the same for all hash values (b, c, ..., h)
+    hash[4] = (b >> 24) & 0xff;
+    hash[5] = (b >> 16) & 0xff;
+    hash[6] = (b >> 8) & 0xff;
+    hash[7] = b & 0xff;
+
+    hash[8] = (c >> 24) & 0xff;
+    hash[9] = (c >> 16) & 0xff;
+    hash[10] = (c >> 8) & 0xff;
+    hash[11] = c & 0xff;
+
+    hash[12] = (d >> 24) & 0xff;
+    hash[13] = (d >> 16) & 0xff;
+    hash[14] = (d >> 8) & 0xff;
+    hash[15] = d & 0xff;
+
+    hash[16] = (e >> 24) & 0xff;
+    hash[17] = (e >> 16) & 0xff;
+    hash[18] = (e >> 8) & 0xff;
+    hash[19] = e & 0xff;
+
+    hash[20] = (f >> 24) & 0xff;
+    hash[21] = (f >> 16) & 0xff;
+    hash[22] = (f >> 8) & 0xff;
+    hash[23] = f & 0xff;
+
+    hash[24] = (g >> 24) & 0xff;
+    hash[25] = (g >> 16) & 0xff;
+    hash[26] = (g >> 8) & 0xff;
+    hash[27] = g & 0xff;
+
+    hash[28] = (h >> 24) & 0xff;
+    hash[29] = (h >> 16) & 0xff;
+    hash[30] = (h >> 8) & 0xff;
+    hash[31] = h & 0xff;
+}
+
+__global__ void sha256_kernel(const unsigned char *data, unsigned char *hash) {
+    sha256_transform(data, hash);
+}
+
+std::string cuda_sha256(const std::string& input) {
+    std::vector<unsigned char> input_vec(input.begin(), input.end());
+    unsigned char *d_input, *d_output;
+
+    // Allocate device memory for input and output
+    cudaMalloc((void**)&d_input, input_vec.size() * sizeof(unsigned char));
+    cudaMalloc((void**)&d_output, 32 * sizeof(unsigned char));  // SHA-256 output size is 32 bytes
+
+    // Copy input data to device
+    cudaMemcpy(d_input, input_vec.data(), input_vec.size() * sizeof(unsigned char), cudaMemcpyHostToDevice);
+
+    // Launch kernel
+    sha256_kernel<<<1, 1>>>(d_input, d_output);
+
+    // Ensure the kernel has finished
+    cudaDeviceSynchronize();
+
+    // Prepare output vector and copy result back to host
+    std::vector<unsigned char> output(32);  // SHA-256 output is 32 bytes
+    cudaMemcpy(output.data(), d_output, 32 * sizeof(unsigned char), cudaMemcpyDeviceToHost);
+
+    // Free device memory
+    cudaFree(d_input);
+    cudaFree(d_output);
+
+    // Convert output to hexadecimal string
+    std::ostringstream oss;
+    for (unsigned char byte : output) {
+        oss << std::setw(2) << std::setfill('0') << std::hex << (int)byte;
     }
 
-   
-    EVP_MD_CTX_free(context);
-
-   
-    std::ostringstream ss;
-     ss << std::uppercase; 
-    for (unsigned int i = 0; i < lengthOfHash; ++i) {
-        ss << std::hex << std::setw(2) << std::setfill('0') << static_cast<int>(hash[i]);
-    }
-
-    return ss.str();
+    return oss.str();
 }
 
 std::string to_little_endian(const std::string& input) {
@@ -361,13 +444,13 @@ int main() {
 
 
     std::string coinbase = coinb1 + extranonce1 + extranonce2 + coinb2;
-    std::string coinbase_hash_bin = sha256(sha256(coinbase));
+    std::string coinbase_hash_bin = cuda_sha256(cuda_sha256(coinbase));
 
 
 
     std::string merkle_root = coinbase_hash_bin;
     for (const auto& branch : merkle_branch) {
-        merkle_root = sha256(sha256(merkle_root + branch));
+      merkle_root = cuda_sha256(cuda_sha256(merkle_root + branch));
     }
 
     merkle_root = to_little_endian(merkle_root);
@@ -381,8 +464,8 @@ int main() {
       std::string blockheader = version + prevhash + merkle_root + nbits + ntime + nonce + 
                               "000000800000000000000000000000000000000000000000000000000000000000000000000000000000000080020000";
 
-     
-    std::string hash = sha256(sha256(blockheader));
+
+      std::string hash = cuda_sha256(cuda_sha256(blockheader));
 
     std::transform(hash.begin(), hash.end(), hash.begin(), ::toupper);
     std::transform(target.begin(), target.end(), target.begin(), ::toupper);

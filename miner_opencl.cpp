@@ -5,8 +5,6 @@
 #include <vector>
 #include <openssl/evp.h>
 #include <openssl/crypto.h>
-#include <winsock2.h>
-#include <ws2tcpip.h>
 #include <nlohmann/json.hpp>
 #include <random>
 #include <ctime>
@@ -14,10 +12,11 @@
 #include <omp.h>
 #include <fstream>
 #include <algorithm>
-
-#pragma comment(lib, "Ws2_32.lib")
-#pragma comment(lib, "libssl.lib")
-#pragma comment(lib, "libcrypto.lib")
+#include <cstring>         
+#include <sys/socket.h>     
+#include <arpa/inet.h>    
+#include <netdb.h>          
+#include <unistd.h>       
 
 using json = nlohmann::json;
 

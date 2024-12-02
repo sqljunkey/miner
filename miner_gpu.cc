@@ -276,14 +276,10 @@ int main() {
   read_file_to_string("address.txt", ADDRESS); 
   read_file_to_string("lowest_hash.txt", lowest_hash);
 
-  std::cout<<"Wallet Address: "<<ADDRESS<<std::endl;
-
-  rng.seed(static_cast<uint32_t>(std::time(nullptr)));
-
-  
+  std::cout<<"Wallet Address: "<<ADDRESS<<std::endl;   
   while(unfound){
 
- 
+  rng.seed(static_cast<uint32_t>(std::time(nullptr)));
 
     
     if (!init_winsock()) {
@@ -373,56 +369,56 @@ int main() {
     merkle_root = to_little_endian(merkle_root);
 
 
-    #pragma omp parallel for schedule(dynamic) 
-    for(int i =0; i < 100000000; i++){
+#pragma omp target teams distribute parallel for schedule(dynamic)
+for (int i = 0; i < 10000000; i++) {
+    // Generate nonce
+    std::string nonce = generate_nonce();
 
-      std::string nonce = generate_nonce();
-
-      std::string blockheader = version + prevhash + merkle_root + nbits + ntime + nonce + 
+    // Create the block header
+    std::string blockheader = version + prevhash + merkle_root + nbits + ntime + nonce +
                               "000000800000000000000000000000000000000000000000000000000000000000000000000000000000000080020000";
 
-     
+    // Calculate hash
     std::string hash = sha256(sha256(blockheader));
 
+    // Convert to uppercase for comparison
     std::transform(hash.begin(), hash.end(), hash.begin(), ::toupper);
     std::transform(target.begin(), target.end(), target.begin(), ::toupper);
 
-    t_hash = target; 
+    // Check if hash is valid
+    t_hash = target;
+    if (hash < target) {
+        #pragma omp critical
+        {
+            if (unfound) {
+                std::cout << "Success! Submitting the result..." << std::endl;
 
-    
-    if (hash < target ) {
-      
-        std::cout << "Success! Submitting the result..." << std::endl;
-	
-        std::string submit_message = "{\"params\": [\"" +
-	  ADDRESS + "\", \"" +
-	  job_id + "\", \"" +
-	  extranonce2 + "\", \"" +
-	  ntime + "\", \"" +
-	  nonce + "\"], \"id\": 1, \"method\": \"mining.submit\"}\n";
+                std::string submit_message = "{\"params\": [\"" +
+                                              ADDRESS + "\", \"" +
+                                              job_id + "\", \"" +
+                                              extranonce2 + "\", \"" +
+                                              ntime + "\", \"" +
+                                              nonce + "\"], \"id\": 1, \"method\": \"mining.submit\"}\n";
 
-	send_data(sockfd, string_to_byte_vector(submit_message));
-	
-        std::string submit_response = receive_data(sockfd);
-	
-        std::cout << "Submit Response: " << submit_response << std::endl;
-	
-	unfound=false;
-	
-    } else if(lowest_hash.empty()) {
+                send_data(sockfd, string_to_byte_vector(submit_message));
 
-      lowest_hash = hash;
-     
-     
-    } else if(hash < lowest_hash){
+                std::string submit_response = receive_data(sockfd);
 
-      lowest_hash = hash;
-      
-
-      write_string_to_file("lowest_hash.txt", lowest_hash);
-      
+                std::cout << "Submit Response: " << submit_response << std::endl;
+                unfound = false;
+            }
+        }
+    } else {
+        #pragma omp critical
+        {
+            if (lowest_hash.empty() || hash < lowest_hash) {
+                lowest_hash = hash;
+                write_string_to_file("lowest_hash.txt", lowest_hash);
+            }
+        }
     }
-  }
+}
+
 
     closesocket(sockfd);
     cleanup_winsock();
