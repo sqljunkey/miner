@@ -185,7 +185,8 @@ void easy_sha256(const char *temp_input , unsigned long temp_input_len, unsigned
  
 if(temp_input_len % 2 != 0 ){
 
-    printf("Error: Not even\n");
+    
+    printf("Error: Not even %lu\n", temp_input_len);
     return; 
  
  
@@ -260,40 +261,31 @@ sha256_read_hex(&buff, temp_output);
  
 }
  
-void ulong_to_hex_string(unsigned long id, char *hex_str) {
+void ulong_to_hex_string(unsigned int id, char *hex_str) {
  
     const char hex_digits[] = "0123456789abcdef";
  
  
-    for (int i = 15; i >= 0; --i) {
+    for (int i = 7; i >= 0; --i) {
         hex_str[i] = hex_digits[id & 0xF];
         id >>= 4;  
     }
  
  
-    hex_str[16] = '\0';
+    hex_str[8] = '\0';
 }
  
- 
-void string_concat(char *dest, const char *src, unsigned long len) {
- 
-    while (*dest != '\0') {
-        dest++;
- 
+
+void string_concat(unsigned char *dest, const unsigned char *src, unsigned long dest_len ,unsigned long src_len) {
+
+     
+
+    for (unsigned long i = 0; i < src_len; i++) {
+        dest[dest_len + i] = src[i]; 
     }
- 
- 
-    for(unsigned long i=0; i < len; i++) {
- 
-        *dest = src[i];
- 
-        dest++;        
- 
-    }
- 
- 
-    *dest = '\0';
+    dest[dest_len + src_len] = '\0'; 
 }
+
  
 void print_string(char *str, unsigned long len){
  
@@ -329,21 +321,21 @@ int hex_string_compare(const char *str1, const char *str2) {
 }
  
  
-__kernel void sha256_kernel(__global const char *input, unsigned long input_len, __global unsigned char *output, __global unsigned long *output_nonce ){
+__kernel void sha256_kernel(__global const char *input, unsigned long input_len, __global unsigned char *output, __global unsigned int  *output_nonce ){
  
- 
-unsigned char temp_input[1024];
-unsigned char temp_output[65];
-unsigned char temp_output_final[65];
-unsigned long temp_input_len;
-unsigned char hex_nonce[17];
-unsigned char *extra_stuff="000000800000000000000000000000000000000000000000000000000000000000000000000000000000000080020000"; 
-unsigned long extra_stuff_len;
-unsigned char temp_temp[65]; 
 
 
-  
+ unsigned char temp_input[1024]={0};
+ unsigned char temp_output[65]={0};
+ unsigned char temp_output_final[65]={0};
+ unsigned long temp_input_len=0;
+ unsigned char hex_nonce[9]={0};
+ unsigned char extra_stuff[96]="000000800000000000000000000000000000000000000000000000000000000000000000000000000000000080020000"; 
+ unsigned char temp_temp[65]={0}; 
+ unsigned int index = get_global_id(0);
+ unsigned long length = 0;
  
+
  for(unsigned long i=0; i < input_len; i++){
  
   temp_input[i]=input[i];
@@ -351,39 +343,42 @@ unsigned char temp_temp[65];
  }
 
  
- ulong_to_hex_string(get_global_id(0), hex_nonce);
+ ulong_to_hex_string(index, hex_nonce);
  
- string_concat(temp_input,hex_nonce, 17);
- string_concat(temp_input,extra_stuff,78); 
+ string_concat(temp_input,hex_nonce, input_len, 8);
+ 
+ temp_input_len = c_strlen(temp_input);
+
+ string_concat(temp_input,extra_stuff,temp_input_len ,96);
  
 
  temp_input_len = c_strlen(temp_input);
  
- 
+
  
  easy_sha256(temp_input, temp_input_len, temp_output);
- easy_sha256(temp_output, 65, temp_output_final);
- 
- 
+ easy_sha256(temp_output, 64, temp_output_final);
 
- for(int i =0 ; i < 65; i++){
-   temp_temp[i]=output[i];
- }
- 
 
- if(hex_string_compare(temp_output_final, temp_temp) < 0  || output[0]=='\0'  ){
+for(int n=0; n < 65; n++){
 
-  *output_nonce = get_global_id(0);
+temp_temp[n] = output[n]; 
 
-  for(int i=0; i < 65; i++ ){
- 
+}
 
-  output[i]=temp_output_final[i];
- 
- 
 
- }
- }
+if( hex_string_compare( temp_output_final, temp_temp  )< 0|| output[0]=='\0'){
+
+for(int n=0; n < 64; n++){
+
+ output[n] = temp_output_final[n];
+
+}
+
+*output_nonce = index; 
+
+}
+
  
  
 }

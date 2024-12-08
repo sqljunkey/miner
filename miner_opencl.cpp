@@ -21,6 +21,12 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include <sstream>
+#include <iomanip>
+#include <stdexcept>
+
+
+
 using json = nlohmann::json;
 
 std::string ADDRESS = "";  // wallet__address
@@ -55,11 +61,34 @@ char* read_kernel_source(const char* filename) {
     return source;
 }
 
-uint32_t  mine_gpu( const char * input_hex,  size_t global_size ,  size_t offset ){
+int hex_string_compare(const char *str1, const char *str2) {
+ 
+    while (*str1 != '\0' && *str2 != '\0') {
+        if (*str1 < *str2) {
+            return -1;  
+        } else if (*str1 > *str2) {
+            return 1;   
+        }
+        str1++;  
+        str2++;  
+    }
+ 
+ 
+    if (*str1 == '\0' && *str2 != '\0') {
+        return -1;  
+    } else if (*str2 == '\0' && *str1 != '\0') {
+        return 1;  
+    }
+ 
+    return 0;  
+}
+
+uint32_t  gpu_mine( const char * input_hex,  size_t global_size ,  size_t offset ){
 
 
     size_t input_len = strlen(input_hex);
-    size_t output_nonce=0; 
+    unsigned int output_nonce=0; 
+    unsigned char hash_output[65]={0}; 
     char* source = read_kernel_source("sha256.cl");
 
  
@@ -98,9 +127,10 @@ uint32_t  mine_gpu( const char * input_hex,  size_t global_size ,  size_t offset
     kernel = clCreateKernel(program, "sha256_kernel", &err);
  
    
-    cl_mem input_buffer = clCreateBuffer(context, CL_MEM_READ_ONLY ,input_len +1,NULL, &err);
-    cl_mem output_buffer = clCreateBuffer(context, CL_MEM_READ_WRITE, 65 , NULL, &err);
-    cl_mem nonce_buffer = clCreateBuffer(context, CL_MEM_WRITE_ONLY, sizeof(unsigned long) , NULL, &err);
+    cl_mem input_buffer = clCreateBuffer(context, CL_MEM_READ_ONLY , sizeof(unsigned char) * input_len +1,NULL, &err);
+    cl_mem output_buffer = clCreateBuffer(context, CL_MEM_READ_WRITE, sizeof(unsigned char) * 65, NULL, &err);
+    if(err !=CL_SUCCESS){printf("Problem Allocating\n");}
+    cl_mem nonce_buffer = clCreateBuffer(context, CL_MEM_WRITE_ONLY, sizeof(unsigned int)  , NULL, &err);
  
     err = clEnqueueWriteBuffer(queue, input_buffer, CL_TRUE, 0, input_len * sizeof(const char)+1, input_hex, 0, NULL, NULL);
  
@@ -116,18 +146,24 @@ uint32_t  mine_gpu( const char * input_hex,  size_t global_size ,  size_t offset
  
 
   
-    err = clEnqueueNDRangeKernel(queue, kernel, 1, &offset, &global_size, NULL, 0, NULL, NULL);
+    err = clEnqueueNDRangeKernel(queue, kernel, 1, NULL, &global_size, NULL, 0, NULL, NULL);
     clFinish(queue);
  
  
    
-    char hash_output[65]={0};
-    err = clEnqueueReadBuffer(queue, output_buffer, CL_TRUE, 0, 65, hash_output, 0, NULL, NULL);
-    err = clEnqueueReadBuffer(queue, nonce_buffer, CL_TRUE, 0, sizeof(unsigned long), &output_nonce, 0, NULL, NULL);
-   
+    
+    err = clEnqueueReadBuffer(queue, output_buffer, CL_TRUE, 0, sizeof(unsigned char) * 65, hash_output, 0, NULL, NULL);
+     if(err !=CL_SUCCESS){printf("Problem\n");}
+    err = clEnqueueReadBuffer(queue, nonce_buffer, CL_TRUE, 0, sizeof(unsigned int) , &output_nonce, 0, NULL, NULL);
+    if(err !=CL_SUCCESS){printf("Problem\n");}
     clFinish(queue);
-    printf("SHA-256 hash: %s\n", hash_output);
- 
+
+  
+
+   
+
+
+    printf("GPU Hash: %s , Nonce: %d \n", hash_output, output_nonce);
     
     clReleaseMemObject(input_buffer);
     clReleaseMemObject(output_buffer);
@@ -177,21 +213,42 @@ bool write_string_to_file(const std::string& filename, const std::string& conten
 
 
 
-std::string sha256(const std::string& input) {
+
+
+
+
+
+std::vector<unsigned char> hexToBytes(const std::string& hex) {
+    if (hex.size() % 2 != 0) {
+        throw std::invalid_argument("Hexadecimal input must have an even length.");
+    }
+
+    std::vector<unsigned char> bytes;
+    for (size_t i = 0; i < hex.size(); i += 2) {
+        unsigned int byte;
+        std::istringstream(hex.substr(i, 2)) >> std::hex >> byte;
+        bytes.push_back(static_cast<unsigned char>(byte));
+    }
+    return bytes;
+}
+
+std::string sha256(const std::string& hexInput) {
     
+    std::vector<unsigned char> binaryInput = hexToBytes(hexInput);
+
+   
     EVP_MD_CTX* context = EVP_MD_CTX_new();
     if (context == nullptr) {
         throw std::runtime_error("Failed to create EVP_MD_CTX");
     }
 
-    
     if (EVP_DigestInit_ex(context, EVP_sha256(), nullptr) != 1) {
         EVP_MD_CTX_free(context);
         throw std::runtime_error("EVP_DigestInit_ex failed");
     }
 
    
-    if (EVP_DigestUpdate(context, input.c_str(), input.size()) != 1) {
+    if (EVP_DigestUpdate(context, binaryInput.data(), binaryInput.size()) != 1) {
         EVP_MD_CTX_free(context);
         throw std::runtime_error("EVP_DigestUpdate failed");
     }
@@ -209,7 +266,7 @@ std::string sha256(const std::string& input) {
 
    
     std::ostringstream ss;
-     ss << std::uppercase; 
+    ss << std::uppercase;
     for (unsigned int i = 0; i < lengthOfHash; ++i) {
         ss << std::hex << std::setw(2) << std::setfill('0') << static_cast<int>(hash[i]);
     }
@@ -267,23 +324,35 @@ void send_data(int sockfd, const std::vector<unsigned char> &data) {
 }
 
 std::string receive_data(int sockfd) {
-    char buffer[4096];
+    constexpr size_t buffer_size = 4096;
+    char buffer[buffer_size];
     std::string result;
+
     ssize_t n;
+    while (true) {
+        n = recv(sockfd, buffer, buffer_size, 0);
+        if (n > 0) {
+            result.append(buffer, n); // Append the received chunk to the result
 
-    while ((n = recv(sockfd, buffer, sizeof(buffer) - 1, 0)) > 0) {
-        buffer[n] = '\0';
-        result += buffer;
-        if (n < sizeof(buffer) - 1)
+	    if(n< sizeof(buffer) -1) break;
+
+	} else if (n == 0) {
+            // Connection closed by the server
+            std::cout << "Connection closed by server.\n";
             break;
+        } else {
+            // Error occurred
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                // Non-blocking mode: no more data to read
+                break;
+            } else {
+                std::cerr << "Receive failed: " << strerror(errno) << "\n";
+                break;
+            }
+        }
     }
 
-    if (n == -1) {
-        std::cerr << "Receive failed\n";
-    } else if (n == 0) {
-        std::cout << "Connection closed by server.\n";
-    }
-
+    
     return result;
 }
 
@@ -352,6 +421,20 @@ std::string generate_nonce(uint32_t i) {
     return ss.str();
 }
 
+void ulong_to_hex_string(unsigned int id, char *hex_str) {
+ 
+    const char hex_digits[] = "0123456789abcdef";
+ 
+ 
+    for (int i = 7; i >= 0; --i) {
+        hex_str[i] = hex_digits[id & 0xF];
+        id >>= 4;  
+    }
+ 
+ 
+    hex_str[8] = '\0';
+}
+
 
 int main() {
 
@@ -390,8 +473,13 @@ int main() {
   
 
     std::string response = receive_data(sockfd);
-   
+
+
+    response = response.substr(0, response.find('\n'));
+    
+
     json json_response = json::parse(response);
+   
     std::string extranonce1 = json_response["result"][1];
     int extranonce2_size = json_response["result"][2];
 
@@ -408,7 +496,8 @@ int main() {
         notify_response = receive_data(sockfd);
     }
 
-
+    notify_response = notify_response.substr(0, notify_response.find('\n'));
+    
     json notify_json     = json::parse(notify_response);
     std::string job_id   = notify_json["params"][0];
     std::string prevhash = notify_json["params"][1];
@@ -430,7 +519,7 @@ int main() {
     std::cout<<std::endl;
     std::cout<<"Mining...unit "<<counter++<<std::endl;
     std::cout<<"Lowest Hash achieved so far: "<<lowest_hash<<std::endl;
-    std::cout<<"Target Hash                : "<<t_hash<<std::endl; 
+    std::cout<<"Target Hash                : "<<t_hash<<std::endl<<std::endl; 
 
     /* Calculate target
     std::string target = nbits.substr(2) + std::string((stoi(nbits.substr(0, 2), nullptr, 16) - 3) * 2, '0');
@@ -458,16 +547,19 @@ int main() {
 
       std::string partial_block_header = version + prevhash + merkle_root + nbits + ntime;
 
-      uint32_t n = gpu_mine(partial_block_header.c_str(), 1000, dist(rng) ); 
+      uint32_t n = gpu_mine(partial_block_header.c_str(), 2000000000, dist(rng) ); 
 
       std::string nonce = generate_nonce(n);
 
+      
+    
       std::string blockheader = partial_block_header + nonce + 
                               "000000800000000000000000000000000000000000000000000000000000000000000000000000000000000080020000";
 
-     
-    std::string hash = sha256(sha256(blockheader));
-    std::cout<<"GPU hash: "<<hash<<std::endl;
+      
+      std::string hash = sha256(sha256(blockheader));
+    
+      std::cout<<"CPU hash: "<<hash<<std::endl<<std::endl;
 
     std::transform(hash.begin(), hash.end(), hash.begin(), ::toupper);
     std::transform(target.begin(), target.end(), target.begin(), ::toupper);

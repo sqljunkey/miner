@@ -307,6 +307,7 @@ int main() {
   
 
     std::string response = receive_data(sockfd);
+    std::cout<<response<<std::endl; 
    
     json json_response = json::parse(response);
     std::string extranonce1 = json_response["result"][1];
